@@ -1,7 +1,9 @@
 ﻿using NDesk.Options;
 using play_logs;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 
 class Program
 {
@@ -57,16 +59,13 @@ class Program
             return;
         }
 
-        Dictionary<string, List<string>> files;
-        List<string> errs;
-
         try
         {
-            List<string> filesList = Directory.GetFiles(directory, "*.log")
-                                              .Where(fn => !fn.EndsWith(".done"))
-                                              .ToList();
+            var filesList = Directory.GetFiles(directory, "*.log")
+                                     .Where(fn => !fn.EndsWith(".done"))
+                                     .ToList();
             var opts = new EmptyOptions(); // Define the empty options class
-            files = OrganizeBySerialNo(filesList);
+            var files = OrganizeBySerialNo(filesList);
             PlayLogs(directory, opts, files);
         }
         catch (Exception e)
@@ -98,10 +97,7 @@ class Program
     {
         var serial = string.Concat(fn.TakeWhile(char.IsDigit));
         if (serial.Length == 0 || !fn[serial.Length..].StartsWith('-'))
-        {
             return null;
-        }
-
         return serial;
     }
 
@@ -240,7 +236,153 @@ class Program
 
     static async Task Send(string directory, Options opts, TMUContext ctx, string tmu, List<string> filesList, SemaphoreSlim throttleV, int sentV)
     {
-        // Implement the logic to send files
+        var ident = GetIdentity(ctx.Timers, tmu); // Assuming GetIdentity is a method that returns a value
+        var stateV = new TVar<LogState>(new LogState(files, null)); // Assuming LogState constructor takes lsFiles and lsLines
+        var sesRef = new IORef<object>(null); // Assuming IORef is similar to C#'s Ref and newIORef creates a new instance
+
+        Func<Task<(string, int, byte[], Action)>> pop = async () => await PopLog(directory, stateV); // Assuming PopLog returns a tuple
+        var mL0 = await pop();
+
+        if (mL0 != null)
+        {
+            RunChannel(ctx, ident, sesRef, () =>
+            {
+                var sendLog = new Func<UNode<Text>, Task>(log =>
+                {
+                    // Implement the logic for sending log
+                    throw new NotImplementedException();
+                });
+
+                var bufferSize = 30; // Maximum number of simultaneous requests to queue up
+
+                Func<Seq<XMLParallel<XMLChannel<IO>, Unit>>, Task<Seq<XMLParallel<XMLChannel<IO>, Unit>>>> block = async (outstanding) =>
+                {
+                    var toDo = await Task.Run(() =>
+                    {
+                        var t = throttleV.Value;
+                        if (t > 0)
+                        {
+                            throttleV.OnNext(t - 1);
+                            return WhatToDo.SendOne;
+                        }
+                        else if (outstanding.Count > 0)
+                        {
+                            return WhatToDo.AwaitOutstanding;
+                        }
+                        else
+                        {
+                            throw new InvalidOperationException("Unexpected condition");
+                        }
+                    });
+
+                    Seq<XMLParallel<XMLChannel<IO>, Unit>> outstanding1;
+                    if (outstanding.Count > bufferSize || toDo == WhatToDo.AwaitOutstanding)
+                    {
+                        var process = outstanding[0];
+                        await process;
+                        sentV.OnNext(sentV.Value + 1);
+                        outstanding1 = outstanding.Skip(1);
+                    }
+                    else
+                    {
+                        outstanding1 = outstanding;
+                    }
+
+                    return toDo == WhatToDo.SendOne ? outstanding1 : await block(outstanding1);
+                };
+            });
+        }
+    }
+
+    async Task Loop((string, int, byte[], Action)? mL, IEnumerable<Task> outstanding0)
+    {
+        if (mL != null)
+        {
+            var (file, lineNo, l, commit) = mL.Value;
+            try
+            {
+                var xml = Parse(defaultParseOptions, l);
+                if (xml == null)
+                {
+                    // Handle null XML
+                }
+                else if (xml.Name.LocalName == "sent")
+                {
+                    var nextML = await Pop(); // Assuming Pop is a method that returns the next log
+                    await Loop(nextML, outstanding0);
+                }
+                else
+                {
+                    var outstanding = await Block(outstanding0);
+                    var awaitReply = SendLog(xml);
+                    var process = awaitReply.ContinueWith(_ => commit.Invoke());
+                    var nextML = await Pop();
+                    await Loop(nextML, outstanding.Concat(new[] { process }));
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"{file}:{lineNo} {Encoding.UTF8.GetString(l)}");
+                Console.Error.WriteLine($"    {ex.Message}");
+                var nextML = await Pop();
+                await Loop(nextML, outstanding0);
+            }
+        }
+        else
+        {
+            foreach (var process in outstanding0)
+            {
+                await process;
+                sentV.Value++;
+            }
+        }
+    }
+
+    static async Task<(string, int, byte[], Action)> PopLog(string directory, LogState stateV)
+    {
+        while (true)
+        {
+            var ml = ReadLine(() => { }); // Assume ReadLine is a method that reads a line
+            if (ml.Item1 != null)
+            {
+                return ml.Item1;
+            }
+            var result = ml.Item2;
+            if (result.Item1 != null)
+            {
+                var file = result.Item1;
+                var startLineNo = result.Item2;
+                var commits = result.Item3;
+
+                byte[] lines;
+                using (var fileStream = File.OpenRead(Path.Combine(directory, file)))
+                {
+                    var uncompressedStream = file.EndsWith(".gz") ? new GZipStream(fileStream, CompressionMode.Decompress) : fileStream;
+                    var reader = new StreamReader(uncompressedStream);
+                    var content = await reader.ReadToEndAsync();
+                    lines = Encoding.UTF8.GetBytes(content);
+                }
+
+                stateV.lsLines = new Tuple<string, int, byte[]>(file, lines.Skip(startLineNo - 1).ToArray(), startLineNo);
+                commits();
+            }
+            else
+            {
+                commits();
+                return null;
+            }
+        }
+    }
+
+    enum WhatToDo
+    {
+        SendOne,
+        AwaitOutstanding
+    }
+
+    static (Tuple<string, int, byte[]>, Tuple<(string, int, Action)>) ReadLine(Action commits)
+    {
+        // Implement the logic to read a line
         throw new NotImplementedException();
     }
 }

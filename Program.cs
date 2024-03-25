@@ -161,7 +161,7 @@ class Program
 
     private static readonly SemaphoreSlim _sendTickets = new(0, 100);
 
-    static void StartSendThrottle(double numLogsPerSecond)
+    static void StartThrottlingTheSend(double numLogsPerSecond)
     {
         _ = Task.Run(async () =>
         {
@@ -206,13 +206,26 @@ class Program
 
     static void ScheduleThreads(string directory, Options options, TMUContext tmuContext, Dictionary<string, List<string>> logFilesContainer, ManualResetEvent exitApplication)
     {
-        StartSendThrottle(options.NumLogsPerSecond);
+        StartThrottlingTheSend(options.NumLogsPerSecond);
 
         StartPrintingNumLogsSent();
 
         var threadLimit = StartSendingLogs(directory, options, tmuContext, logFilesContainer, exitApplication);
 
         WaitForAllThreads(threadLimit, options);
+    }
+
+    static void WaitForAllThreads(SemaphoreSlim threadLimit, Options options)
+    {
+        while (threadLimit.CurrentCount < options.NumThreads)
+        {
+            int count = options.NumThreads - threadLimit.CurrentCount;
+            Console.Write($"\rwaiting for {count} thread{(count == 1 ? "" : "s")}...");
+            Console.Out.Flush();
+            Thread.Sleep(100);
+        }
+
+        Console.WriteLine("\nfinished");
     }
 
     static SemaphoreSlim StartSendingLogs(string directory, Options options, TMUContext tmuContext, Dictionary<string, List<string>> logFilesContainer, ManualResetEvent exitApplication)
@@ -236,28 +249,15 @@ class Program
         return threadLimit;
     }
 
-    static void WaitForAllThreads(SemaphoreSlim threadLimit, Options options)
-    {
-        while (threadLimit.CurrentCount < options.NumThreads)
-        {
-            int count = options.NumThreads - threadLimit.CurrentCount;
-            Console.Write($"\rwaiting for {count} thread{(count == 1 ? "" : "s")}...");
-            Console.Out.Flush();
-            Thread.Sleep(100);
-        }
-
-        Console.WriteLine("\nfinished");
-    }
-
     private static void SendAllLogs(SemaphoreSlim threadLimit, string directory, Options options, TMUContext tmuContext, string serialNo, List<string> logFileNames)
     {
         try
         {
-            SendAllLogLines(directory, options, tmuContext, serialNo, logFileNames).Wait();
+            SendAllLogLines(directory, options, tmuContext, serialNo, logFileNames).Wait(); // block this thread here
         }
         finally
         {
-            threadLimit.Release();
+            threadLimit.Release(); // strong guarantee due to finally block
         }
     }
 
@@ -284,7 +284,7 @@ class Program
 
             //await requestP(30000000, element);
 
-            await Task.Delay(_random.Next(3500, 8000));
+            await Task.Delay(_random.Next(3500, 8000)); // temp
 
             logLine = logState.Pop();
         }
@@ -348,47 +348,5 @@ class Program
     //            sentV.Value++;
     //        }
     //    }
-    //}
-
-    //static async Task<(string, int, byte[], Action)> PopLog(string directory, LogState stateV)
-    //{
-    //    while (true)
-    //    {
-    //        var ml = ReadLine(() => { }); // Assume ReadLine is a method that reads a line
-    //        if (ml.Item1 != null)
-    //        {
-    //            return ml.Item1;
-    //        }
-    //        var result = ml.Item2;
-    //        if (result.Item1 != null)
-    //        {
-    //            var file = result.Item1;
-    //            var startLineNo = result.Item2;
-    //            var commits = result.Item3;
-
-    //            byte[] lines;
-    //            using (var fileStream = File.OpenRead(Path.Combine(directory, file)))
-    //            {
-    //                var uncompressedStream = file.EndsWith(".gz") ? new GZipStream(fileStream, CompressionMode.Decompress) : fileStream;
-    //                var reader = new StreamReader(uncompressedStream);
-    //                var content = await reader.ReadToEndAsync();
-    //                lines = Encoding.UTF8.GetBytes(content);
-    //            }
-
-    //            stateV.lsLines = new Tuple<string, int, byte[]>(file, lines.Skip(startLineNo - 1).ToArray(), startLineNo);
-    //            commits();
-    //        }
-    //        else
-    //        {
-    //            commits();
-    //            return null;
-    //        }
-    //    }
-    //}
-
-    //static (Tuple<string, int, byte[]>, Tuple<(string, int, Action)>) ReadLine(Action commits)
-    //{
-    //    // Implement the logic to read a line
-    //    throw new NotImplementedException();
     //}
 }

@@ -1,0 +1,177 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<dictionary version="0">
+    <context id="root">
+        <tag name="dictionary">
+            <attribute name="version">
+                <any-integer bits="32" signed="false"/>
+            </attribute>
+            <multiple length="false" key="contexts">
+                <tag name="context">
+                    <attribute name="id">
+                        <any-string key="common"/>
+                    </attribute>
+                    <multiple length="false" key="context-children">
+                        <call id="context-element"/>
+                    </multiple>
+                </tag>
+            </multiple>
+        </tag>
+    </context>
+    <context id="context-element">
+        <one-of>
+            <tag name="multiple">
+                <attribute name="length">
+                    <call id="boolean"/>
+                </attribute>
+                <optional>
+                    <attribute name="key">
+                        <any-string key="common"/>
+                    </attribute>
+                </optional>
+                <multiple length="false" key="multiple-children">
+                    <call id="context-element"/>
+                </multiple>
+            </tag>
+            <tag name="optional">
+                <call id="context-element"/>
+            </tag>
+            <tag name="one-of">
+                <multiple length="false" key="one-of-children">
+                    <call id="field"/>
+                </multiple>
+            </tag>
+            <call id="field"/>
+        </one-of>
+    </context>
+    <context id="field">
+        <one-of>
+            <tag name="tag">
+                <attribute name="name">
+                    <any-string key="common"/>
+                </attribute>
+                <multiple length="false" key="tag-children">
+                    <call id="context-element"/>
+                </multiple>
+            </tag>
+            <tag name="any-tag">
+                <attribute name="key">
+                    <any-string key="common"/>
+                </attribute>
+                <multiple length="false" key="any-tag-children">
+                    <call id="context-element"/>
+                </multiple>
+            </tag>
+            <tag name="attribute">
+                <attribute name="name">
+                    <any-string key="common"/>
+                </attribute>
+                <multiple length="false" key="attribute-children">
+                    <call id="context-element"/>
+                </multiple>
+            </tag>
+            <tag name="any-attribute">
+                <attribute name="key">
+                    <any-string key="common"/>
+                </attribute>
+                <multiple length="false" key="any-attribute-children">
+                    <call id="context-element"/>
+                </multiple>
+            </tag>
+            <tag name="any-string">
+                <optional>
+                    <attribute name="trim">
+                        <string text="true"/>
+                    </attribute>
+                </optional>
+                <optional>
+                    <attribute name="key">
+                        <any-string key="common"/>
+                    </attribute>
+                </optional>
+            </tag>
+            <tag name="any-base64">
+                <optional>
+                    <attribute name="key">
+                        <any-string key="common"/>
+                    </attribute>
+                </optional>
+            </tag>
+            <tag name="any-time">
+                <optional>
+                    <attribute name="key">
+                        <any-string key="common"/>
+                    </attribute>
+                </optional>
+            </tag>
+            <tag name="any-integer">
+                <attribute name="bits">
+                    <any-integer bits="6" signed="false"/>
+                </attribute>
+                <attribute name="signed">
+                    <call id="boolean"/>
+                </attribute>
+                <optional>
+                    <attribute name="differentialOrder">
+                        <any-integer bits="2" signed="false"/>
+                    </attribute>
+                </optional>
+                <optional>
+                    <attribute name="differentialOffset">
+                        <any-integer bits="31" signed="true"/>
+                    </attribute>
+                </optional>
+                <optional>
+                    <attribute name="key">
+                        <any-string key="common"/>
+                    </attribute>
+                </optional>
+            </tag>
+            <tag name="any-real">
+                <optional>
+                    <attribute name="differentialOrder">
+                        <any-integer bits="2" signed="false"/>
+                    </attribute>
+                </optional>
+                <optional>
+                    <attribute name="offset">
+                        <any-base64 key="common"/>
+                    </attribute>
+                </optional>
+                <attribute name="scale">
+                    <any-base64 key="common"/>
+                </attribute>
+                <attribute name="dplaces">
+                    <any-integer bits="7" signed="true"/>
+                </attribute>
+                <optional>
+                    <attribute name="key">
+                        <any-string key="common"/>
+                    </attribute>
+                </optional>
+            </tag>
+            <tag name="string">
+                <attribute name="text">
+                    <any-string key="common"/>
+                </attribute>
+            </tag>
+            <tag name="integer"/>
+            <tag name="block"/>
+            <tag name="sync">
+                <attribute name="id">
+                    <any-integer bits="8" signed="false"/>
+                </attribute>
+            </tag>
+            <tag name="call">
+                <attribute name="id">
+                    <any-string key="common"/>
+                </attribute>
+            </tag>
+        </one-of>
+    </context>
+    <context id="boolean">
+        <one-of>
+            <string text="false"/>
+            <string text="true"/>
+        </one-of>
+    </context>
+</dictionary>

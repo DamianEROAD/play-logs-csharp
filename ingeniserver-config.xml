@@ -1,0 +1,14 @@
+﻿<?xml version="1.0"?>
+<ingeniserver-config>
+    <security>
+        <users>
+            <user name="ingenitech" password="b@st@rd">
+                <privilege id="admin"/>
+                <privilege id="config"/>
+                <privilege id="debug"/>
+                <privilege id="message"/>
+                <listen names="*"/>
+            </user>
+        </users>
+    </security>
+</ingeniserver-config>

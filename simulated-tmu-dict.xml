@@ -1,0 +1,128 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+
+<dictionary version="0">
+
+    <context id="root">
+        <sync id="0"/>
+        <tag name="ingenitech">
+            <tag name="identity">
+                <attribute name="type">
+                    <one-of>
+                        <string text="server"/>
+                        <string text="tmu"/>
+                    </one-of>
+                </attribute>
+                <attribute name="identifier">
+                    <optional>
+                        <any-string key="common"/>
+                    </optional>
+                </attribute>
+                <attribute name="name">
+                    <optional>
+                        <any-string key="common"/>
+                    </optional>
+                </attribute>
+            </tag>
+            <sync id="1"/>
+            <multiple length="false">
+                <one-of>
+                    <tag name="request">
+                        <attribute name="id">
+                            <any-integer bits="32" signed="false" differentialOrder="1" differentialOffset="1" key="reqID"/>
+                        </attribute>
+                        <call id="request"/>
+                    </tag>
+                    <tag name="reply">
+                        <attribute name="id">
+                            <any-integer bits="32" signed="false" differentialOrder="1" differentialOffset="1" key="reqID"/>
+                        </attribute>
+                        <call id="reply"/>
+                    </tag>
+                </one-of>
+                <sync id="2"/>
+            </multiple>
+        </tag>
+    </context>
+
+    <context id="request">
+        <one-of>
+            <tag name="log">
+                <attribute name="type">
+                    <one-of>
+                        <string text="alert"/>
+                        <string text="logger"/>
+                        <string text="error"/>
+                        <string text="info"/>
+                    </one-of>
+                </attribute>
+                <call id="log"/>
+            </tag>
+            <tag name="terminate">
+                <attribute name="reason">
+                    <one-of>
+                        <string text="idle and want to save power"/>
+                        <string text="hard reset Telit due to no GPS fix"/>
+                        <string text="hard reset Telit due to GPS not functioning"/>
+                        <string text="GPS power ON"/>
+                        <any-string key="common"/>
+                        <block/>
+                    </one-of>
+                </attribute>
+            </tag>
+            <tag name="message">
+                <attribute name="time">
+                    <any-time/>
+                </attribute>
+                <optional>
+                    <attribute name="queue">
+                        <optional>
+                            <any-string key="common"/>
+                        </optional>
+                    </attribute>
+                </optional>
+                <call id="any-tags"/>
+            </tag>
+            <call id="any-tag"/>
+            <block/>
+        </one-of>
+    </context>
+
+    <context id="reply">
+        <multiple length="true">
+            <one-of>
+                <any-string trim="true" key="common"/>
+                <call id="any-tag"/>
+            </one-of>
+        </multiple>
+    </context>
+
+    <context id="any-tag">
+        <any-tag key="common">
+            <call id="any-attributes"/>
+            <call id="any-tags"/>
+        </any-tag>
+    </context>
+
+    <context id="any-tags">
+        <multiple length="true">
+            <one-of>
+                <any-string trim="true" key="common"/>
+                <call id="any-tag"/>
+            </one-of>
+        </multiple>
+    </context>
+
+    <context id="any-attributes">
+        <multiple length="true">
+            <any-attribute key="common">
+                <optional>
+                    <any-string key="common"/>
+                </optional>
+            </any-attribute>
+        </multiple>
+    </context>
+
+    <context id="log">
+        <call id="any-tag"/>
+    </context>
+</dictionary>

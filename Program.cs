@@ -257,7 +257,7 @@ class Program
         }
         finally
         {
-            threadLimit.Release(); // strong guarantee due to finally block
+            threadLimit.Release(); // strong guarantee
         }
     }
 

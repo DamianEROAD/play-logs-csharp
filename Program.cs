@@ -1,7 +1,7 @@
 ﻿using NDesk.Options;
+using play_logs;
 using System.Net;
 using System.Net.Sockets;
-using play_logs;
 
 class Program
 {
@@ -32,6 +32,9 @@ class Program
     }
 
     static OptionSet _optionDefinitions = [];
+    static ManualResetEvent _exitApplication = new(false);
+    static ManualResetEvent _throttlingThreadEnded = new(false);
+    static ManualResetEvent _printingThreadEnded = new(false);
 
     static void Main(string[] args)
     {
@@ -92,7 +95,7 @@ class Program
             if (filesList.Count == 0)
                 Console.WriteLine($"There are no *.log files within the directory {directoryName}");
             else
-                PlayLogsAsync(directoryName, options, BuildLogContainer(filesList)).Wait();
+                PlayLogsThenWait(directoryName, options, BuildLogContainer(filesList));
         }
         catch (Exception e)
         {
@@ -133,30 +136,45 @@ class Program
         return serial;
     }
 
-    static async Task PlayLogsAsync(string directoryName, Options options, Dictionary<string, List<string>> logFilesContainer)
+    static void PlayLogsThenWait(string directoryName, Options options, Dictionary<string, List<string>> logFilesContainer)
     {
-        var serverStream = await ResolveAddressAsync(AddressFamily.Unspecified, ProtocolType.Tcp, options.HostName, (options.PortBase + 3).ToString());
-        var serverDatagram = await ResolveAddressAsync(AddressFamily.InterNetwork, ProtocolType.Udp, options.HostName, (options.PortBase + 3).ToString());
+        var serverStream = ResolveAddress(AddressFamily.Unspecified, ProtocolType.Tcp, options.HostName, (options.PortBase + 3).ToString());
+        Console.WriteLine($"Remote TCP address is {serverStream}");
+
+        var serverDatagram = ResolveAddress(AddressFamily.InterNetwork, ProtocolType.Udp, options.HostName, (options.PortBase + 3).ToString());
+        Console.WriteLine($"Remote UDP address is {serverDatagram}");
 
         var tmuContext = new TMUContext(serverStream, serverDatagram, "simulated-tmu-dict.xml", false);
 
-        ManualResetEvent exitApplication = new(false);
-        _ = Task.Run(() =>
+        var t = new Thread(() =>
         {
             Console.WriteLine("press ENTER to terminate cooperatively");
-            Console.ReadLine(); // <-- blocks the main thread here
-            exitApplication.Set();
+            Console.ReadLine();
+            _exitApplication.Set();
         });
+        t.Start();
 
-        ScheduleThreads(directoryName, options, tmuContext, logFilesContainer, exitApplication);
+        ScheduleThreadsThenWait(directoryName, options, tmuContext, logFilesContainer);
+        WaitForHouseKeepingThreadsToEnd();
     }
 
-    static async Task<IPEndPoint> ResolveAddressAsync(AddressFamily addressFamily, ProtocolType protocolType, string host, string port)
+    static void WaitForHouseKeepingThreadsToEnd()
     {
+        _exitApplication.Set();
+        while (!(_throttlingThreadEnded.WaitOne(0) && _printingThreadEnded.WaitOne(0)))
+        {
+            KickPrintingThread();
+            Thread.Sleep(100);
+        }
+    }
+
+    static IPEndPoint ResolveAddress(AddressFamily addressFamily, ProtocolType protocolType, string host, string port)
+    {
+        // FIXME: use protocolType or remove it
         if (host == "localhost")
             return new IPEndPoint(IPAddress.Parse("127.0.0.1"), int.Parse(port));
 
-        var addresses = await Dns.GetHostAddressesAsync(host);
+        var addresses = Dns.GetHostAddresses(host);
         foreach (var address in addresses)
         {
             if (address.AddressFamily == addressFamily)
@@ -170,54 +188,96 @@ class Program
 
     static void StartThrottlingTheSend(double numLogsPerSecond)
     {
-        _ = Task.Run(async () =>
+        var t = new Thread(() =>
         {
             // Generate permissions to send at the correct rate
             var periodUS = (int)Math.Round(1000000 / numLogsPerSecond);
-            while (true)
+            while (!_exitApplication.WaitOne(0))
             {
-                await Task.Delay(periodUS);
+                Thread.Sleep(periodUS);
                 _sendTickets.Release();
             }
+
+            _throttlingThreadEnded.Set();
         });
+        t.Start();
     }
 
+    static readonly object _linePrinter = new();
+
     static readonly object _numLogsSentLock = new();
+    static bool _printingKicked = false;
     static int _numLogsSent = 0;
+    static int _totalLogs = 0;
 
     static void StartPrintingNumLogsSent()
     {
-        _ = Task.Run(() =>
+        var t = new Thread(() =>
         {
+            int previousValue = 0;
             while (true)
             {
                 lock (_numLogsSentLock)
                 {
-                    while (_numLogsSent == 0)
+                    while (_numLogsSent == previousValue && !_printingKicked)
                         Monitor.Wait(_numLogsSentLock);
-                    Console.Write($"\r{new string(' ', 10 - _numLogsSent.ToString().Length)}{_numLogsSent} logs sent");
+                    previousValue = _numLogsSent;
+                    _printingKicked = false;
+                }
+
+                if (_exitApplication.WaitOne(0))
+                    break;
+
+                string numSentString = $"{new string(' ', 10 - previousValue.ToString().Length)}{previousValue}";
+                int percentCompleted = previousValue * 100 / _totalLogs;
+
+                lock (_linePrinter)
+                {
+                    Console.Write($"\r{numSentString}/{_totalLogs} logs sent ({percentCompleted}%)");
                     Console.Out.Flush();
                 }
             }
+
+            _printingThreadEnded.Set();
         });
+        t.Start();
     }
 
-    static void UpdateNumLogsSent(int numLogsSent)
+    static void KickPrintingThread()
     {
         lock (_numLogsSentLock)
         {
-            _numLogsSent = numLogsSent;
-            Monitor.Pulse(_numLogsSentLock); // Notify waiting thread
+            _printingKicked = true;
+            Monitor.Pulse(_numLogsSentLock); // Notify printing thread
         }
     }
 
-    static void ScheduleThreads(string directory, Options options, TMUContext tmuContext, Dictionary<string, List<string>> logFilesContainer, ManualResetEvent exitApplication)
+    static void IncrementNumLogsSent(int increment = 1)
+    {
+        lock (_numLogsSentLock)
+        {
+            _numLogsSent += increment;
+            Monitor.Pulse(_numLogsSentLock); // Notify printing thread
+        }
+    }
+
+    static void CountLogFilesContainer(Dictionary<string, List<string>> logFilesContainer)
+    {
+        _totalLogs = 0;
+        foreach (var l in logFilesContainer)
+            _totalLogs += l.Value.Count;
+        KickPrintingThread();
+    }
+
+    static void ScheduleThreadsThenWait(string directory, Options options, TMUContext tmuContext, Dictionary<string, List<string>> logFilesContainer)
     {
         StartThrottlingTheSend(options.NumLogsPerSecond);
 
         StartPrintingNumLogsSent();
 
-        var threadLimit = StartSendingLogs(directory, options, tmuContext, logFilesContainer, exitApplication);
+        CountLogFilesContainer(logFilesContainer);
+
+        var threadLimit = StartSendingLogs(directory, options, tmuContext, logFilesContainer);
 
         WaitForAllThreads(threadLimit, options);
     }
@@ -227,24 +287,32 @@ class Program
         while (threadLimit.CurrentCount < options.NumThreads)
         {
             int count = options.NumThreads - threadLimit.CurrentCount;
-            Console.Write($"\rwaiting for {count} thread{(count == 1 ? "" : "s")}...");
-            Console.Out.Flush();
+            lock (_linePrinter)
+            {
+                if (!_printingThreadEnded.WaitOne(0))
+                    Console.CursorTop++;
+                Console.Write($"\rWaiting for {count} thread{(count == 1 ? "" : "s")}...   ");
+                if (!_printingThreadEnded.WaitOne(0))
+                    Console.CursorTop--;
+                Console.Out.Flush();
+            }
             Thread.Sleep(100);
         }
 
-        Console.WriteLine("\nfinished");
+        Console.CursorTop++;
+        Console.WriteLine("\nFinished");
     }
 
-    static SemaphoreSlim StartSendingLogs(string directory, Options options, TMUContext tmuContext, Dictionary<string, List<string>> logFilesContainer, ManualResetEvent exitApplication)
+    static SemaphoreSlim StartSendingLogs(string directory, Options options, TMUContext tmuContext, Dictionary<string, List<string>> logFilesContainer)
     {
         var threadLimit = new SemaphoreSlim(options.NumThreads);
 
         foreach (var logFileNames in logFilesContainer)
         {
-            if (exitApplication.WaitOne(0))
+            if (_exitApplication.WaitOne(0))
                 break;
 
-            threadLimit.Wait();
+            threadLimit.Wait(); // Wait for the Send throttle to allow us to proceed
 
             var serialNo = logFileNames.Key;
             var fileNames = logFileNames.Value;
@@ -291,8 +359,9 @@ class Program
 
             //await requestP(30000000, element);
 
-            await Task.Delay(_random.Next(3500, 8000)); // temp
+            await Task.Delay(_random.Next(1500, 3000)); // temp
 
+            IncrementNumLogsSent();
             logLine = logState.Pop();
         }
     }

@@ -2,7 +2,7 @@
   "profiles": {
     "play-logs-csharp": {
       "commandName": "Project",
-      "commandLineArgs": "C:\\Development\\play-logs-csharp\\Logs"
+      "commandLineArgs": "Logs"
     }
   }
 }

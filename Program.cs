@@ -85,9 +85,10 @@ class Program
 
         try
         {
-            var filesList = Directory.GetFiles(directoryName, "*.log")
-                                     .Where(fileName => !fileName.EndsWith(".done"))
-                                     .ToList();
+            if (!Directory.Exists(directoryName))
+                Directory.CreateDirectory(directoryName);
+
+            var filesList = Directory.GetFiles(directoryName).Where(IsLogFileName).ToList();
             if (filesList.Count == 0)
                 Console.WriteLine($"There are no *.log files within the directory {directoryName}");
             else
@@ -98,6 +99,12 @@ class Program
             Console.WriteLine($"Error: {e.Message}");
             return;
         }
+    }
+
+    static bool IsLogFileName(string fileName)
+    {
+        return fileName.Contains(".log", StringComparison.InvariantCultureIgnoreCase) &&
+              !fileName.EndsWith(".done", StringComparison.InvariantCultureIgnoreCase);
     }
 
     static Dictionary<string, List<string>> BuildLogContainer(List<string> fileNames)

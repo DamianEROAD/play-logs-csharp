@@ -2,6 +2,7 @@
 using play_logs;
 using System.Net;
 using System.Net.Sockets;
+using System.Xml;
 
 class Program
 {
@@ -32,9 +33,10 @@ class Program
     }
 
     static OptionSet _optionDefinitions = [];
-    static ManualResetEvent _exitApplication = new(false);
-    static ManualResetEvent _throttlingThreadEnded = new(false);
-    static ManualResetEvent _printingThreadEnded = new(false);
+    static readonly ManualResetEvent _allThreadsCompleted = new(false);
+    static readonly ManualResetEvent _enterPressed = new(false);
+    static readonly ManualResetEvent _throttlingThreadEnded = new(false);
+    static readonly ManualResetEvent _printingThreadEnded = new(false);
 
     static void Main(string[] args)
     {
@@ -88,6 +90,8 @@ class Program
 
         try
         {
+            Console.CursorVisible = false;
+
             if (!Directory.Exists(directoryName))
                 Directory.CreateDirectory(directoryName);
 
@@ -95,12 +99,15 @@ class Program
             if (filesList.Count == 0)
                 Console.WriteLine($"There are no *.log files within the directory {directoryName}");
             else
-                PlayLogsThenWait(directoryName, options, BuildLogContainer(filesList));
+                PlayLogsThenWait(directoryName, options, BuildLogFilesList(filesList));
         }
         catch (Exception e)
         {
             Console.WriteLine($"Error: {e.Message}");
-            return;
+        }
+        finally
+        {
+            Console.CursorVisible = true;
         }
     }
 
@@ -110,22 +117,22 @@ class Program
               !fileName.EndsWith(".done", StringComparison.InvariantCultureIgnoreCase);
     }
 
-    static Dictionary<string, List<string>> BuildLogContainer(List<string> fileNames)
+    static Dictionary<string, List<string>> BuildLogFilesList(List<string> fileNames)
     {
-        var logFilesContainer = new Dictionary<string, List<string>>();
+        var logFilesList = new Dictionary<string, List<string>>();
         foreach (var fileName in fileNames)
         {
             var serialNo = SerialNoOfFilename(Path.GetFileName(fileName));
             if (serialNo != null)
             {
-                if (!logFilesContainer.ContainsKey(serialNo))
-                    logFilesContainer[serialNo] = [];
-                logFilesContainer[serialNo].Add(fileName);
+                if (!logFilesList.ContainsKey(serialNo))
+                    logFilesList[serialNo] = [];
+                logFilesList[serialNo].Add(fileName);
             }
             else
                 Console.WriteLine($"WARNING: can't extract the serial number from filename: {fileName}");
         }
-        return logFilesContainer;
+        return logFilesList;
     }
 
     static string? SerialNoOfFilename(string fileName)
@@ -136,7 +143,7 @@ class Program
         return serial;
     }
 
-    static void PlayLogsThenWait(string directoryName, Options options, Dictionary<string, List<string>> logFilesContainer)
+    static void PlayLogsThenWait(string directoryName, Options options, Dictionary<string, List<string>> logFilesList)
     {
         var serverStream = ResolveAddress(AddressFamily.Unspecified, ProtocolType.Tcp, options.HostName, (options.PortBase + 3).ToString());
         Console.WriteLine($"Remote TCP address is {serverStream}");
@@ -148,19 +155,25 @@ class Program
 
         var t = new Thread(() =>
         {
-            Console.WriteLine("press ENTER to terminate cooperatively");
+            Console.WriteLine("Press ENTER to terminate cooperatively");
+
             Console.ReadLine();
-            _exitApplication.Set();
+            _enterPressed.Set();
+
+            if (_allThreadsCompleted.WaitOne(0))
+                Console.WriteLine("Waiting for housekeeping threads to end...");
         });
         t.Start();
 
-        ScheduleThreadsThenWait(directoryName, options, tmuContext, logFilesContainer);
+        ScheduleThreadsThenWait(directoryName, options, tmuContext, logFilesList);
         WaitForHouseKeepingThreadsToEnd();
     }
 
     static void WaitForHouseKeepingThreadsToEnd()
     {
-        _exitApplication.Set();
+        if (_enterPressed.WaitOne(0))
+            Console.WriteLine("Waiting for housekeeping threads to end...");
+
         while (!(_throttlingThreadEnded.WaitOne(0) && _printingThreadEnded.WaitOne(0)))
         {
             KickPrintingThread();
@@ -191,8 +204,8 @@ class Program
         var t = new Thread(() =>
         {
             // Generate permissions to send at the correct rate
-            var periodUS = (int)Math.Round(1000000 / numLogsPerSecond);
-            while (!_exitApplication.WaitOne(0))
+            var periodUS = (int)Math.Round(1000000 / Math.Max(1, numLogsPerSecond)); // prevent DBZ
+            while (!_allThreadsCompleted.WaitOne(0))
             {
                 Thread.Sleep(periodUS);
                 _sendTickets.Release();
@@ -204,16 +217,23 @@ class Program
     }
 
     static readonly object _linePrinter = new();
-
     static readonly object _numLogsSentLock = new();
+    static readonly object _printerCursorRowLock = new();
+
     static bool _printingKicked = false;
     static int _numLogsSent = 0;
-    static int _totalLogs = 0;
+    static int _totalLogFiles = 0;
+    static int _printerCursorRow = 0;
 
     static void StartPrintingNumLogsSent()
     {
         var t = new Thread(() =>
         {
+            lock (_printerCursorRowLock)
+            {
+                _printerCursorRow = Console.CursorTop;
+            }
+
             int previousValue = 0;
             while (true)
             {
@@ -225,15 +245,16 @@ class Program
                     _printingKicked = false;
                 }
 
-                if (_exitApplication.WaitOne(0))
+                if (_allThreadsCompleted.WaitOne(0))
                     break;
 
                 string numSentString = $"{new string(' ', 10 - previousValue.ToString().Length)}{previousValue}";
-                int percentCompleted = previousValue * 100 / _totalLogs;
+                int percentCompleted = previousValue * 100 / _totalLogFiles;
 
                 lock (_linePrinter)
                 {
-                    Console.Write($"\r{numSentString}/{_totalLogs} logs sent ({percentCompleted}%)");
+                    Console.CursorTop = _printerCursorRow;
+                    Console.Write($"\r{numSentString}/{_totalLogFiles} logs sent ({percentCompleted}%)");
                     Console.Out.Flush();
                 }
             }
@@ -261,74 +282,88 @@ class Program
         }
     }
 
-    static void CountLogFilesContainer(Dictionary<string, List<string>> logFilesContainer)
+    static void CountLogFiles(Dictionary<string, List<string>> logFilesList)
     {
-        _totalLogs = 0;
-        foreach (var l in logFilesContainer)
-            _totalLogs += l.Value.Count;
+        _totalLogFiles = 0;
+        foreach (var l in logFilesList)
+            _totalLogFiles += l.Value.Count;
         KickPrintingThread();
     }
 
-    static void ScheduleThreadsThenWait(string directory, Options options, TMUContext tmuContext, Dictionary<string, List<string>> logFilesContainer)
+    static void ScheduleThreadsThenWait(string directory, Options options, TMUContext tmuContext, Dictionary<string, List<string>> logFilesList)
     {
         StartThrottlingTheSend(options.NumLogsPerSecond);
 
         StartPrintingNumLogsSent();
 
-        CountLogFilesContainer(logFilesContainer);
+        CountLogFiles(logFilesList);
 
-        var threadLimit = StartSendingLogs(directory, options, tmuContext, logFilesContainer);
+        var threadLimit = StartSendingLogs(directory, options, tmuContext, logFilesList);
 
         WaitForAllThreads(threadLimit, options);
     }
 
     static void WaitForAllThreads(SemaphoreSlim threadLimit, Options options)
     {
+        int previousCount = 0;
         while (threadLimit.CurrentCount < options.NumThreads)
         {
             int count = options.NumThreads - threadLimit.CurrentCount;
-            lock (_linePrinter)
+            if (count != previousCount)
             {
-                if (!_printingThreadEnded.WaitOne(0))
-                    Console.CursorTop++;
-                Console.Write($"\rWaiting for {count} thread{(count == 1 ? "" : "s")}...   ");
-                if (!_printingThreadEnded.WaitOne(0))
-                    Console.CursorTop--;
-                Console.Out.Flush();
+                lock (_linePrinter)
+                {
+                    Console.CursorTop = _printerCursorRow + 1;
+                    Console.Write($"\rWaiting for {count} thread{(count == 1 ? "" : "s")}...   ");
+                    Console.Out.Flush();
+                }
+                previousCount = count;
             }
             Thread.Sleep(100);
         }
 
-        Console.CursorTop++;
-        Console.WriteLine("\nFinished");
+        lock (_linePrinter)
+        {
+            Console.CursorTop = _printerCursorRow + 2;
+            Console.CursorVisible = true;
+            if (_enterPressed.WaitOne(0))
+                Console.WriteLine("\rFinished.");
+            else
+                Console.WriteLine("\rFinished. Press ENTER when you're ready...");
+        }
+        _allThreadsCompleted.Set();
     }
 
-    static SemaphoreSlim StartSendingLogs(string directory, Options options, TMUContext tmuContext, Dictionary<string, List<string>> logFilesContainer)
+    static SemaphoreSlim StartSendingLogs(string directory, Options options, TMUContext tmuContext, Dictionary<string, List<string>> logFilesList)
     {
         var threadLimit = new SemaphoreSlim(options.NumThreads);
 
-        foreach (var logFileNames in logFilesContainer)
+        foreach (var logFileNames in logFilesList)
         {
-            if (_exitApplication.WaitOne(0))
+            if (_enterPressed.WaitOne(0))
                 break;
 
-            threadLimit.Wait(); // Wait for the Send throttle to allow us to proceed
+            threadLimit.Wait();       // <-- notice we block here
 
             var serialNo = logFileNames.Key;
-            var fileNames = logFileNames.Value;
+            var logs = logFileNames.Value;
 
-            var t = new Thread(() => { SendAllLogs(threadLimit, directory, options, tmuContext, serialNo, fileNames); });
+            var t = new Thread(() => { SendLogsThread(threadLimit, directory, tmuContext, serialNo, logs); });
             t.Start();
         }
 
         return threadLimit;
     }
 
-    private static void SendAllLogs(SemaphoreSlim threadLimit, string directory, Options options, TMUContext tmuContext, string serialNo, List<string> logFileNames)
+    private static void SendLogsThread(SemaphoreSlim threadLimit, string directory, TMUContext tmuContext, string serialNo, List<string> logFileNames)
     {
         try
         {
-            SendAllLogLines(directory, options, tmuContext, serialNo, logFileNames).Wait(); // block this thread here
+            SendLogs(directory, tmuContext, serialNo, logFileNames);
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($"(SendLogsThread) Error: {e.Message}");
         }
         finally
         {
@@ -344,85 +379,94 @@ class Program
         AwaitOutstanding
     }
 
-    static async Task SendAllLogLines(string directory, Options options, TMUContext tmuContext, string serialNo, List<string> logFileNames)
+    static void SendLogs(string directory, TMUContext tmuContext, string serialNo, List<string> logFileNames)
     {
-        //var ident = GetIdentity(tmuContext.timers, serialNo);
+        var ident = GetIdentity(/*tmuContext.timers,*/ serialNo);
+
+        XmlParserContext context = new(null, null, null, XmlSpace.None);
+        XmlReaderSettings settings = new() { ConformanceLevel = ConformanceLevel.Fragment };
 
         LogState logState = new(logFileNames);
-        LogState.LogLine? logLine = logState.Pop();
+        LogState.LogLine? logLine = logState.Pop(directory);
         while (logLine != null)
         {
-            //var channel = tmuComp(tmuContext, ident);
-            //channel.Run();
+            try
+            {
+                using (XmlReader reader = XmlReader.Create(new StringReader(logLine.Line), settings, context))
+                {
+                    reader.MoveToContent();
+                    while (reader.Read())
+                    {
+                        if (reader.NodeType != XmlNodeType.Element || string.Compare(reader.Name, "sent", true) == 0)
+                            continue;
 
-            //var element = new Element() { Name = "log", Type = new Tuple<string, string>("type", "logger"), Contents = "log" };
+                        string xmlElement0 = $"<log type=\"logger\">{log}</log>";
+                        string xmlElement1 = $"<request id=\"{allocID}\">{xmlElement0}</request>";
 
-            //await requestP(30000000, element);
+                        int channel = tmuComp(tmuContext, ident);
+                        runChannel(channel);
+                        IncrementNumLogsSent();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                lock (_linePrinter)
+                {
+                    Console.CursorVisible = false;
+                    Console.CursorTop = _printerCursorRow + 4;
+                    Console.WriteLine($"{logLine.FileName}({logLine.StartLineNo}): {logLine.Line}");
+                    Console.CursorTop = _printerCursorRow + 5;
+                    Console.WriteLine(ex.Message);
+                }
+            }
 
-            await Task.Delay(_random.Next(1500, 3000)); // temp
-
-            IncrementNumLogsSent();
-            logLine = logState.Pop();
+            logLine = logState.Pop(directory);
         }
     }
 
-    //static async Task<TMUIdent> GetIdentity(Timers timers, string serialNo)
-    //{
-    //    var dir = "play-logs.identities";
-    //    if (!Directory.Exists(dir))
-    //        Directory.CreateDirectory(dir);
+    static private int GetIdentity(/*tmuContext.timers,*/ string serialNo)
+    {
+        // TODO
+        return 0;
+    }
 
-    //    var context = await GetClientSSLCTX(timers, dir, serialNo);
-    //    return new TMUIdent(context, serialNo, "serial no " + serialNo);
-    //}
+    static private int tmuComp(TMUContext tmuContext, int ident)
+    {
+        // TODO
+        return 0;
+    }
 
-    //static async Task<object> GetClientSSLCTX(Timers timers, string dir, string serialNo)
-    //{
-    //    // Implement the logic to get the client SSL context here
-    //    return null;
-    //}
+    static private void runChannel(int channel)
+    {
+        int channelState = 0;
+        int conversationState = 0;
 
-    //async Task Loop((string, int, byte[], Action)? mL, IEnumerable<Task> outstanding0)
-    //{
-    //    if (mL != null)
-    //    {
-    //        var (file, lineNo, l, commit) = mL.Value;
-    //        try
-    //        {
-    //            var xml = Parse(defaultParseOptions, l);
-    //            if (xml == null)
-    //            {
-    //                // Handle null XML
-    //            }
-    //            else if (xml.Name.LocalName == "sent")
-    //            {
-    //                var nextML = await Pop(); // Assuming Pop is a method that returns the next log
-    //                await Loop(nextML, outstanding0);
-    //            }
-    //            else
-    //            {
-    //                var outstanding = await Block(outstanding0);
-    //                var awaitReply = SendLog(xml);
-    //                var process = awaitReply.ContinueWith(_ => commit.Invoke());
-    //                var nextML = await Pop();
-    //                await Loop(nextML, outstanding.Concat(new[] { process }));
-    //            }
-    //        }
-    //        catch (Exception ex)
-    //        {
-    //            Console.Error.WriteLine($"{file}:{lineNo} {Encoding.UTF8.GetString(l)}");
-    //            Console.Error.WriteLine($"    {ex.Message}");
-    //            var nextML = await Pop();
-    //            await Loop(nextML, outstanding0);
-    //        }
-    //    }
-    //    else
-    //    {
-    //        foreach (var process in outstanding0)
-    //        {
-    //            await process;
-    //            sentV.Value++;
-    //        }
-    //    }
-    //}
+        bool completed = false;
+        while (!completed)
+        {
+            var result = runConversation(channel, channelState, conversationState);
+            switch (result)
+            {
+                case ConversationResult.Result:
+                    completed = true;
+                    break;
+                case ConversationResult.Awaiting:
+                    // TODO
+                    break;
+                case ConversationResult.Failure:
+                    // TODO
+                    break;
+            }
+        }
+    }
+
+    enum ConversationResult { Result, Awaiting, Failure }
+
+    private static ConversationResult runConversation(int channel, int channelState, int conversationState)
+    {
+        // TODO
+        Thread.Sleep(_random.Next(750, 1500)); // temp
+        return ConversationResult.Result;
+    }
 }

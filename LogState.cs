@@ -1,70 +1,88 @@
-﻿namespace play_logs
+﻿
+
+using System.IO;
+using System.IO.Compression;
+
+namespace play_logs
 {
     internal class LogState
     {
-        public class LogLine
-        {
-            public string FileName { get; set; } = string.Empty;
-            public List<byte> Bytes { get; set; } = [];
-            public int StartLineNo { get; set; }
-        }
-
-        private readonly List<string> _fileNames;
-
         public LogState(List<string> fileNames)
         {
+            if (fileNames is null || fileNames.Count == 0)
+                throw new ArgumentNullException(nameof(fileNames));
             _fileNames = fileNames;
         }
 
-        public LogLine? Pop()
+        public class LogLine
         {
-            // TODO: this code is here just to kick the log sending loop
-            if (_fileNames.Count == 0) return null;
-            string s = _fileNames[0];
-            _fileNames.RemoveAt(0);
-            return new LogLine() { FileName = s };
+            public string FileName { get; set; } = string.Empty;
+            public int StartLineNo { get; set; }
+            public string Line { get; set; } = string.Empty;
         }
 
-        //static async Task<(string, int, byte[], Action)> PopLog(string directory, LogState stateV)
-        //{
-        //    while (true)
-        //    {
-        //        var ml = ReadLine(() => { }); // Assume ReadLine is a method that reads a line
-        //        if (ml.Item1 != null)
-        //        {
-        //            return ml.Item1;
-        //        }
-        //        var result = ml.Item2;
-        //        if (result.Item1 != null)
-        //        {
-        //            var file = result.Item1;
-        //            var startLineNo = result.Item2;
-        //            var commits = result.Item3;
+        private readonly List<string> _fileNames;
+        private LinkedList<string> _lines = new();
+        private int _currentLineNo = 1;
+        private string _currentFileName = string.Empty;
 
-        //            byte[] lines;
-        //            using (var fileStream = File.OpenRead(Path.Combine(directory, file)))
-        //            {
-        //                var uncompressedStream = file.EndsWith(".gz") ? new GZipStream(fileStream, CompressionMode.Decompress) : fileStream;
-        //                var reader = new StreamReader(uncompressedStream);
-        //                var content = await reader.ReadToEndAsync();
-        //                lines = Encoding.UTF8.GetBytes(content);
-        //            }
+        public LogLine? Pop(string directory)
+        {
+            if (_lines.Count == 0)
+            {
+                var lines = LoadNextFile(directory);
+                while ((lines is null || lines.Count == 0) && _fileNames.Count > 0)
+                    lines = LoadNextFile(directory);
 
-        //            stateV.lsLines = new Tuple<string, int, byte[]>(file, lines.Skip(startLineNo - 1).ToArray(), startLineNo);
-        //            commits();
-        //        }
-        //        else
-        //        {
-        //            commits();
-        //            return null;
-        //        }
-        //    }
-        //}
+                if (lines is null || lines.Count == 0)
+                    return null;
 
-        //static (Tuple<string, int, byte[]>, Tuple<(string, int, Action)>) ReadLine(Action commits)
-        //{
-        //    // Implement the logic to read a line
-        //    throw new NotImplementedException();
-        //}
+                _currentLineNo = 1;
+                _lines = lines;
+            }
+
+            string line = _lines.First();
+            _lines.RemoveFirst();
+
+            int i = _currentLineNo;
+            ++_currentLineNo;
+
+            return new() { FileName = _currentFileName, StartLineNo = i, Line = line };
+        }
+
+        private LinkedList<string>? LoadNextFile(string directory)
+        {
+            if (_fileNames.Count == 0)
+                return null;
+
+            if (!string.IsNullOrEmpty(_currentFileName))
+                File.Move(Path.Combine(directory, _currentFileName), Path.Combine(directory, $"{_currentFileName}.done"));
+
+            _currentFileName = _fileNames[0];
+            _fileNames.RemoveAt(0);
+
+            var path = Path.Combine(directory, _currentFileName);
+
+            if (_currentFileName.ToLower().EndsWith(".gz"))
+                return new(ReadAndDecompressAllLines(path));
+
+            return new(File.ReadAllLines(path));
+        }
+
+        private static LinkedList<string> ReadAndDecompressAllLines(string path)
+        {
+            string text = string.Empty;
+            byte[] bytes = File.ReadAllBytes(path);
+            using (MemoryStream from = new(bytes))
+            {
+                using MemoryStream to = new();
+                using (GZipStream codec = new(from, CompressionMode.Decompress))
+                {
+                    codec.CopyTo(to);
+                }
+                text = System.Text.Encoding.UTF8.GetString(bytes);
+            }
+            return new(text.Split(["\r\n", "\r", "\n"], StringSplitOptions.None));
+        }
     }
 }

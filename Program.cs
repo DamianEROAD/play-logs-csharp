@@ -392,21 +392,20 @@ class Program
         {
             try
             {
-                using (XmlReader reader = XmlReader.Create(new StringReader(logLine.Line), settings, context))
+                using XmlReader reader = XmlReader.Create(new StringReader(logLine.Line), settings, context);
+
+                reader.MoveToContent();
+                while (reader.Read())
                 {
-                    reader.MoveToContent();
-                    while (reader.Read())
-                    {
-                        if (reader.NodeType != XmlNodeType.Element || string.Compare(reader.Name, "sent", true) == 0)
-                            continue;
+                    if (reader.NodeType != XmlNodeType.Element || string.Compare(reader.Name, "sent", true) == 0)
+                        continue;
 
-                        string xmlElement0 = $"<log type=\"logger\">{log}</log>";
-                        string xmlElement1 = $"<request id=\"{allocID}\">{xmlElement0}</request>";
+                    // string xmlElement0 = $"<log type=\"logger\">{log}</log>";
+                    // string xmlElement1 = $"<request id=\"{allocID}\">{xmlElement0}</request>";
 
-                        int channel = tmuComp(tmuContext, ident);
-                        runChannel(channel);
-                        IncrementNumLogsSent();
-                    }
+                    int channel = tmuComp(tmuContext, ident);
+                    runChannel(channel);
+                    IncrementNumLogsSent();
                 }
             }
             catch (Exception ex)

@@ -1,6 +1,4 @@
-﻿
-
-using System.IO;
+﻿using System.IO;
 using System.IO.Compression;
 
 namespace play_logs
@@ -71,17 +69,15 @@ namespace play_logs
 
         private static LinkedList<string> ReadAndDecompressAllLines(string path)
         {
-            string text = string.Empty;
-            byte[] bytes = File.ReadAllBytes(path);
-            using (MemoryStream from = new(bytes))
+            byte[] bytes;
+            using (var file = File.OpenRead(path))
             {
-                using MemoryStream to = new();
-                using (GZipStream codec = new(from, CompressionMode.Decompress))
-                {
-                    codec.CopyTo(to);
-                }
-                text = System.Text.Encoding.UTF8.GetString(bytes);
+                using var compressedBytes = new GZipStream(file, CompressionMode.Decompress);
+                using var uncompressedBytes = new MemoryStream();
+                compressedBytes.CopyTo(uncompressedBytes);
+                bytes = uncompressedBytes.ToArray();
             }
+            string text = System.Text.Encoding.UTF8.GetString(bytes);
             return new(text.Split(["\r\n", "\r", "\n"], StringSplitOptions.None));
         }
     }
